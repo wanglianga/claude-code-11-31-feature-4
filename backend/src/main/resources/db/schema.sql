@@ -378,3 +378,141 @@ CREATE TABLE IF NOT EXISTS release_audit_log (
     reason              TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- ---------------------------------------------------------------------
+-- 12. 工程资料规则资产化（特性4）
+--     尺寸/接口/替代条件必须先审查为规则资产（原文位置/对象/单位/边界/
+--     适用范围/前置证明/反例）才能进入主数据；缺单位、端点不明、来源冲突
+--     的文本只进入待补队列；无法编译的陈述不得宽松发布。
+-- ---------------------------------------------------------------------
+
+-- 工程资料原文登记（按 文档编号+修订 唯一，修订撤销只影响后续规则版本）
+CREATE TABLE IF NOT EXISTS spec_document (
+    id              BIGSERIAL PRIMARY KEY,
+    doc_code        VARCHAR(64)  NOT NULL,
+    revision        VARCHAR(16)  NOT NULL,
+    title           VARCHAR(256) NOT NULL,
+    doc_type        VARCHAR(24)  NOT NULL
+                    CHECK (doc_type IN ('PART_SPEC','INTERFACE_SPEC','SUBSTITUTION_SPEC','INSTALL_SPEC')),
+    source_team     VARCHAR(128) NOT NULL,
+    source_contract_id BIGINT REFERENCES ingestion_contract(id),
+    source_ref      VARCHAR(256),
+    payload_digest  VARCHAR(128),
+    status          VARCHAR(16)  NOT NULL DEFAULT 'VERIFIED'
+                    CHECK (status IN ('VERIFIED','REV_WITHDRAWN')),
+    registered_by   VARCHAR(64),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (doc_code, revision)
+);
+
+-- 资料原文条目（原句不可改写；待补只追加 supplemented_text）
+CREATE TABLE IF NOT EXISTS spec_statement (
+    id              BIGSERIAL PRIMARY KEY,
+    statement_code  VARCHAR(64)  NOT NULL UNIQUE,
+    document_id     BIGINT      NOT NULL REFERENCES spec_document(id),
+    source_locator  VARCHAR(256) NOT NULL,
+    original_text   TEXT         NOT NULL,
+    supplemented_text TEXT,
+    object_entity_id BIGINT REFERENCES master_entity(id),
+    aspect          VARCHAR(24)  NOT NULL
+                    CHECK (aspect IN ('DIMENSION','INTERFACE','POWER','PROTOCOL','SUBSTITUTION')),
+    status          VARCHAR(20)  NOT NULL DEFAULT 'DRAFT'
+                    CHECK (status IN ('DRAFT','PENDING_SUPPLEMENT','PARSED','MODELED',
+                                      'COMPILED','VALIDATED','PUBLISHED','REJECTED','SUPERSEDED')),
+    pending_reason  VARCHAR(32),
+    parse_report    JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_by      VARCHAR(64),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_statement_doc ON spec_statement (document_id);
+CREATE INDEX IF NOT EXISTS idx_statement_status ON spec_statement (status);
+CREATE INDEX IF NOT EXISTS idx_statement_object ON spec_statement (object_entity_id, aspect);
+
+-- 受控决策表（工作流2：工程师人工建模，支持例外与继承，表格版本维护）
+CREATE TABLE IF NOT EXISTS decision_table (
+    id              BIGSERIAL PRIMARY KEY,
+    table_code      VARCHAR(64)  NOT NULL,
+    table_version   VARCHAR(16)  NOT NULL,
+    statement_id    BIGINT      NOT NULL REFERENCES spec_statement(id),
+    rows_spec       JSONB        NOT NULL,
+    inherits_table  VARCHAR(64),
+    modeled_by      VARCHAR(64),
+    status          VARCHAR(16)  NOT NULL DEFAULT 'DRAFT'
+                    CHECK (status IN ('DRAFT','COMPILED','RETIRED')),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (table_code, table_version)
+);
+
+-- 规则资产（两种工作流的统一产物：编译谓词 + 边界测试 + 适用范围）
+CREATE TABLE IF NOT EXISTS rule_asset (
+    id              BIGSERIAL PRIMARY KEY,
+    asset_code      VARCHAR(64)  NOT NULL,
+    asset_version   VARCHAR(16)  NOT NULL,
+    statement_id    BIGINT      NOT NULL REFERENCES spec_statement(id),
+    workflow        VARCHAR(16)  NOT NULL CHECK (workflow IN ('SYNTAX_PARSE','DECISION_TABLE')),
+    decision_table_id BIGINT REFERENCES decision_table(id),
+    object_entity_id BIGINT REFERENCES master_entity(id),
+    aspect          VARCHAR(24)  NOT NULL,
+    unit            VARCHAR(32),
+    compiled_predicate JSONB     NOT NULL,
+    boundary_tests  JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    scope_spec      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    status          VARCHAR(16)  NOT NULL DEFAULT 'COMPILED'
+                    CHECK (status IN ('COMPILED','VALIDATED','PUBLISHED','REJECTED','SUPERSEDED')),
+    validation_result VARCHAR(8),
+    supersedes_asset_id BIGINT REFERENCES rule_asset(id),
+    source_withdrawn BOOLEAN NOT NULL DEFAULT FALSE,
+    published_at    TIMESTAMPTZ,
+    published_by    VARCHAR(64),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (asset_code, asset_version)
+);
+CREATE INDEX IF NOT EXISTS idx_asset_statement ON rule_asset (statement_id);
+CREATE INDEX IF NOT EXISTS idx_asset_status ON rule_asset (status);
+
+-- 统一反例集（两种工作流的产物都用它验证）
+CREATE TABLE IF NOT EXISTS counterexample (
+    id              BIGSERIAL PRIMARY KEY,
+    case_code       VARCHAR(64)  NOT NULL UNIQUE,
+    aspect          VARCHAR(24)  NOT NULL,
+    target_attr     VARCHAR(96),
+    input_spec      JSONB        NOT NULL,
+    expected_verdict VARCHAR(8)  NOT NULL CHECK (expected_verdict IN ('ACCEPT','REJECT')),
+    rationale       TEXT         NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- 验证运行记录（反例集 + 边界测试的执行留痕）
+CREATE TABLE IF NOT EXISTS asset_validation_run (
+    id              BIGSERIAL PRIMARY KEY,
+    asset_id        BIGINT      NOT NULL REFERENCES rule_asset(id),
+    validator_version VARCHAR(16) NOT NULL,
+    total_cases     INT         NOT NULL,
+    passed_cases    INT         NOT NULL,
+    failures        JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    result          VARCHAR(8)  NOT NULL CHECK (result IN ('PASS','FAIL')),
+    run_by          VARCHAR(64),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_validation_asset ON asset_validation_run (asset_id);
+
+-- 修订/撤销通知（只改变后续规则版本，已发布版本内容不改写）
+CREATE TABLE IF NOT EXISTS spec_revision_notice (
+    id              BIGSERIAL PRIMARY KEY,
+    notice_code     VARCHAR(64)  NOT NULL UNIQUE,
+    document_id     BIGINT      NOT NULL REFERENCES spec_document(id),
+    notice_type     VARCHAR(24)  NOT NULL CHECK (notice_type IN ('REVISION_WITHDRAW','REVISION_REPLACE')),
+    successor_document_id BIGINT REFERENCES spec_document(id),
+    note            TEXT,
+    registered_by   VARCHAR(64),
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+-- 质量事件类型扩展（幂等：覆盖旧 CHECK，追加规则资产类事件）
+ALTER TABLE quality_event DROP CONSTRAINT IF EXISTS quality_event_event_type_check;
+ALTER TABLE quality_event ADD CONSTRAINT quality_event_event_type_check
+    CHECK (event_type IN
+        ('CONFLICT_BLOCK','ENTITY_FREEZE','RULE_RETIRE','FACT_CORRECTION',
+         'LATE_VOUCHER','SNAPSHOT_REVIEW','RELEASE_GATE_BLOCK',
+         'SPEC_HARD_STOP','SPEC_PENDING_SUPPLEMENT','SPEC_REVISION_WITHDRAWN','RULE_ASSET_SUPERSEDED'));

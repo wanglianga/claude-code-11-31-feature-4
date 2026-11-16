@@ -13,6 +13,7 @@
         <el-menu-item index="/drawings"><el-icon><Document /></el-icon><span>图号与修订</span></el-menu-item>
         <el-menu-item index="/events"><el-icon><List /></el-icon><span>实装事件</span></el-menu-item>
         <el-menu-item index="/rules"><el-icon><Share /></el-icon><span>规则与血缘</span></el-menu-item>
+        <el-menu-item index="/spec-assets"><el-icon><Collection /></el-icon><span>规则资产</span></el-menu-item>
         <el-menu-item index="/snapshots"><el-icon><Camera /></el-icon><span>快照与时点查询</span></el-menu-item>
         <el-menu-item index="/compatibility"><el-icon><CircleCheck /></el-icon><span>兼容与发布闸门</span></el-menu-item>
         <el-menu-item index="/impact"><el-icon><Guide /></el-icon><span>影响分析</span></el-menu-item>

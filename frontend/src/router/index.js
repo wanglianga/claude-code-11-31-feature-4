@@ -13,6 +13,7 @@ const routes = [
       { path: 'drawings', name: 'drawings', component: () => import('../views/Drawings.vue'), meta: { title: '图号与修订' } },
       { path: 'events', name: 'events', component: () => import('../views/Events.vue'), meta: { title: '追加式实装事件' } },
       { path: 'rules', name: 'rules', component: () => import('../views/Rules.vue'), meta: { title: '替代规则与血缘' } },
+      { path: 'spec-assets', name: 'spec-assets', component: () => import('../views/SpecAssets.vue'), meta: { title: '工程资料规则资产' } },
       { path: 'snapshots', name: 'snapshots', component: () => import('../views/Snapshots.vue'), meta: { title: '配置快照与时点查询' } },
       { path: 'compatibility', name: 'compatibility', component: () => import('../views/Compatibility.vue'), meta: { title: '兼容事实与发布闸门' } },
       { path: 'impact', name: 'impact', component: () => import('../views/Impact.vue'), meta: { title: '影响分析' } },
